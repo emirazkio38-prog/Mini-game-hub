@@ -1,6 +1,5 @@
-
 -- PIXEL ARCADE HUB V4
--- 10 GAMES | MOBILE FRIENDLY
+-- 11 GAMES | MOBILE FRIENDLY
 -- CONTROL LAYOUT FIX
 -- LocalScript: StarterPlayer > StarterPlayerScripts
 
@@ -201,7 +200,7 @@ local games={}
 local names={
  "Flappy Bird","Snake","Brick Breaker","Space Shooter",
  "Pixel Racing","Mine Puzzle","Whack-a-Mole","Tic-Tac-Toe",
- "Pixel Pong VS CPU","Tetris Pixel"
+ "Pixel Pong VS CPU","Tetris Pixel","Block Blast"
 }
 
 local function controls(restart)
@@ -791,6 +790,481 @@ games[10]=function()
    move(0,1)
   end
  end
+end
+
+-- 11 BLOCK BLAST
+local blastBest=0
+
+games[11]=function()
+ local GuiService=game:GetService("GuiService")
+ local TweenService=game:GetService("TweenService")
+ local Debris=game:GetService("Debris")
+
+ local N,GAP=8,3
+ local EMPTY=Color3.fromRGB(48,54,104)
+ local PALETTE={
+  Color3.fromRGB(235,70,70),Color3.fromRGB(245,150,50),
+  Color3.fromRGB(245,205,50),Color3.fromRGB(80,200,100),
+  Color3.fromRGB(60,150,235),Color3.fromRGB(150,90,220),
+  Color3.fromRGB(235,100,170)
+ }
+
+ -- SOUND: {id, volume, pitch}
+ -- Kalau ada yang tidak bunyi, ganti id dengan "rbxassetid://NOMOR" dari Toolbox (Audio)
+ local SFX={
+  click={"rbxasset://sounds/switch.wav",0.6,1.0},
+  pick={"rbxasset://sounds/switch.wav",0.5,1.4},
+  place={"rbxasset://sounds/button.wav",0.8,0.9},
+  invalid={"rbxasset://sounds/snap.mp3",0.5,0.7},
+  clear={"rbxasset://sounds/electronicpingshort.wav",0.9,1.0},
+  over={"rbxasset://sounds/uuhhh.mp3",0.9,1.0}
+ }
+
+ local RAW={
+  {"X"},
+  {"XX"},{"X","X"},
+  {"XXX"},{"X","X","X"},
+  {"XXXX"},{"X","X","X","X"},
+  {"XXXXX"},{"X","X","X","X","X"},
+  {"XX","XX"},{"XXX","XXX","XXX"},
+  {"XXX","XXX"},{"XX","XX","XX"},
+  {"XX","X."},{"XX",".X"},{"X.","XX"},{".X","XX"},
+  {"X..","X..","XXX"},{"..X","..X","XXX"},
+  {"XXX","X..","X.."},{"XXX","..X","..X"},
+  {"X.","X.","XX"},{".X",".X","XX"},
+  {"XX","X.","X."},{"XX",".X",".X"},
+  {"XXX",".X."},{".X.","XXX"},{"X.","XX","X."},{".X","XX",".X"},
+  {".XX","XX."},{"XX.",".XX"},{"X.","XX",".X"},{".X","XX","X."}
+ }
+ local SHAPES={}
+ for _,rows in ipairs(RAW) do
+  local cl={}
+  for r,row in ipairs(rows) do
+   for c=1,#row do
+    if row:sub(c,c)=="X" then table.insert(cl,{r-1,c-1}) end
+   end
+  end
+  table.insert(SHAPES,{cells=cl,h=#rows,w=#rows[1]})
+ end
+
+ local grid={}
+ for r=1,N do
+  grid[r]={}
+  for c=1,N do grid[r][c]=false end
+ end
+ local slots={}
+ local score,combo=0,0
+ local busy,isOver,alive,soundOn=false,false,true,true
+ local drag=nil
+ local cs,boardPx=20,0
+ local slotW,slotH=80,80
+
+ local t=title("BLOCK BLAST | 0")
+
+ -- area permainan (lebih besar dari arena biasa)
+ local a=obj("Frame",area,{
+  Position=UDim2.new(.02,0,.09,0),
+  Size=UDim2.new(.96,0,.80,0),
+  BackgroundColor3=Color3.fromRGB(26,30,62),
+  ClipsDescendants=true,ZIndex=10,BorderSizePixel=0
+ })
+ round(a,8)
+
+ local board=obj("Frame",a,{
+  BackgroundColor3=Color3.fromRGB(34,38,80),
+  BorderSizePixel=0,ZIndex=11
+ })
+ round(board,8)
+
+ local cells={}
+ for r=1,N do
+  cells[r]={}
+  for c=1,N do
+   local f=obj("Frame",board,{BackgroundColor3=EMPTY,BorderSizePixel=0,ZIndex=12})
+   round(f,4)
+   cells[r][c]=f
+  end
+ end
+
+ local slotFrames,trayPieces={},{}
+
+ -- suara
+ local function play(name,mul)
+  if not soundOn or not alive then return end
+  local d=SFX[name]
+  if not d then return end
+  local s=Instance.new("Sound")
+  s.SoundId=d[1]
+  s.Volume=d[2]
+  s.PlaybackSpeed=d[3]*(mul or 1)
+  s.Parent=gui
+  s:Play()
+  Debris:AddItem(s,4)
+ end
+
+ local sb
+ sb=btn(area,"🔊",UDim2.new(1,-40,0,2),UDim2.fromOffset(34,26),C.panel,function()
+  soundOn=not soundOn
+  sb.Text=soundOn and "🔊" or "🔇"
+  play("click")
+ end)
+
+ local function buildPiece(piece,size,gap,z)
+  local sh=piece.shape
+  local f=obj("Frame",nil,{
+   BackgroundTransparency=1,ZIndex=z,
+   Size=UDim2.fromOffset(sh.w*(size+gap)-gap,sh.h*(size+gap)-gap)
+  })
+  for _,cl in ipairs(sh.cells) do
+   local c=obj("Frame",f,{
+    Size=UDim2.fromOffset(size,size),
+    Position=UDim2.fromOffset(cl[2]*(size+gap),cl[1]*(size+gap)),
+    BackgroundColor3=piece.color,BorderSizePixel=0,ZIndex=z
+   })
+   round(c,4)
+  end
+  return f
+ end
+
+ -- logika
+ local function canPlace(shape,row,col)
+  for _,cl in ipairs(shape.cells) do
+   local r,c=row+cl[1],col+cl[2]
+   if r<1 or r>N or c<1 or c>N or grid[r][c] then return false end
+  end
+  return true
+ end
+
+ local function fitsAnywhere(shape)
+  for r=1,N do for c=1,N do
+   if canPlace(shape,r,c) then return true end
+  end end
+  return false
+ end
+
+ local function findLines(extra)
+  local function filled(r,c) return grid[r][c] or (extra and extra[r*16+c]) end
+  local rows,cols={},{}
+  for r=1,N do
+   local full=true
+   for c=1,N do if not filled(r,c) then full=false break end end
+   if full then rows[#rows+1]=r end
+  end
+  for c=1,N do
+   local full=true
+   for r=1,N do if not filled(r,c) then full=false break end end
+   if full then cols[#cols+1]=c end
+  end
+  return rows,cols
+ end
+
+ local function renderBoard(prev)
+  local extra,hl=nil,{}
+  if prev then
+   extra={}
+   for _,cl in ipairs(prev.piece.shape.cells) do
+    extra[(prev.row+cl[1])*16+prev.col+cl[2]]=true
+   end
+   local rows,cols=findLines(extra)
+   for _,r in ipairs(rows) do for c=1,N do hl[r*16+c]=true end end
+   for _,c in ipairs(cols) do for r=1,N do hl[r*16+c]=true end end
+  end
+  for r=1,N do for c=1,N do
+   local col=grid[r][c] or EMPTY
+   if prev then
+    local k=r*16+c
+    if extra[k] then
+     col=prev.piece.color
+    elseif hl[k] and grid[r][c] then
+     col=grid[r][c]:Lerp(C.white,.55)
+    end
+   end
+   cells[r][c].BackgroundColor3=col
+  end end
+ end
+
+ local function renderTray()
+  for i=1,3 do
+   if trayPieces[i] then trayPieces[i]:Destroy() trayPieces[i]=nil end
+   local p=slots[i]
+   if p and slotFrames[i] then
+    local size=math.min(cs*.75,(slotW*.8)/p.shape.w,(slotH*.8)/p.shape.h)
+    size=math.max(8,math.floor(size))
+    local f=buildPiece(p,size,2,13)
+    f.AnchorPoint=Vector2.new(.5,.5)
+    f.Position=UDim2.fromScale(.5,.5)
+    f.Parent=slotFrames[i]
+    trayPieces[i]=f
+   end
+  end
+ end
+
+ local function updateTitle()
+  if score>blastBest then blastBest=score end
+  t.Text="BLOCK BLAST | "..score.." | BEST "..blastBest
+ end
+
+ local function layout()
+  local W,H=a.AbsoluteSize.X,a.AbsoluteSize.Y
+  if W<20 or H<20 then return end
+  local pad=6
+  local landscape=W>=H*1.1
+  local bsz
+  if landscape then bsz=math.min(H-pad*2,W*.62) else bsz=math.min(W-pad*2,H*.64) end
+  cs=math.max(10,math.floor((bsz-GAP*(N+1))/N))
+  boardPx=cs*N+GAP*(N+1)
+  local bx,by
+  if landscape then
+   bx,by=pad,(H-boardPx)/2
+   slotW=math.max(40,W-boardPx-pad*3)
+   slotH=math.max(40,(H-pad*4)/3)
+   for i=1,3 do
+    slotFrames[i].Size=UDim2.fromOffset(slotW,slotH)
+    slotFrames[i].Position=UDim2.fromOffset(bx+boardPx+pad,pad+(i-1)*(slotH+pad))
+   end
+  else
+   bx,by=(W-boardPx)/2,pad
+   slotW=math.max(40,(W-pad*4)/3)
+   slotH=math.max(40,H-boardPx-pad*3)
+   for i=1,3 do
+    slotFrames[i].Size=UDim2.fromOffset(slotW,slotH)
+    slotFrames[i].Position=UDim2.fromOffset(pad+(i-1)*(slotW+pad),by+boardPx+pad)
+   end
+  end
+  board.Position=UDim2.fromOffset(bx,by)
+  board.Size=UDim2.fromOffset(boardPx,boardPx)
+  for r=1,N do for c=1,N do
+   local f=cells[r][c]
+   f.Size=UDim2.fromOffset(cs,cs)
+   f.Position=UDim2.fromOffset(GAP+(c-1)*(cs+GAP),GAP+(r-1)*(cs+GAP))
+  end end
+  renderTray()
+ end
+
+ local function popup(text)
+  local l=obj("TextLabel",a,{
+   AnchorPoint=Vector2.new(.5,.5),
+   Position=UDim2.new(.5,0,.5,0),
+   Size=UDim2.new(1,0,0,100),
+   BackgroundTransparency=1,Text=text,
+   TextColor3=C.yellow,TextStrokeColor3=Color3.fromRGB(60,30,0),
+   TextStrokeTransparency=0,Font=Enum.Font.GothamBlack,
+   TextSize=24,ZIndex=24
+  })
+  TweenService:Create(l,TweenInfo.new(.9),{
+   Position=UDim2.new(.5,0,.5,-60),
+   TextTransparency=1,TextStrokeTransparency=1
+  }):Play()
+  Debris:AddItem(l,1)
+ end
+
+ local function newPieces()
+  for _=1,30 do
+   for i=1,3 do
+    slots[i]={
+     shape=SHAPES[math.random(#SHAPES)],
+     color=PALETTE[math.random(#PALETTE)]
+    }
+   end
+   for i=1,3 do
+    if fitsAnywhere(slots[i].shape) then return end
+   end
+  end
+ end
+
+ local function checkGameOver()
+  for i=1,3 do
+   if slots[i] and fitsAnywhere(slots[i].shape) then return end
+  end
+  isOver=true
+  task.wait(.4)
+  if not alive then return end
+  play("over")
+  over(a,"GAME OVER\nSCORE "..score)
+ end
+
+ local function place(i,row,col)
+  busy=true
+  local p=slots[i]
+  play("place")
+  for _,cl in ipairs(p.shape.cells) do
+   grid[row+cl[1]][col+cl[2]]=p.color
+  end
+  slots[i]=nil
+  score=score+#p.shape.cells
+  renderBoard()
+  renderTray()
+
+  local rows,cols=findLines()
+  local n=#rows+#cols
+  if n>0 then
+   combo=combo+1
+   local clr={}
+   for _,r in ipairs(rows) do for c=1,N do clr[r*16+c]=true end end
+   for _,c in ipairs(cols) do for r=1,N do clr[r*16+c]=true end end
+   for k in pairs(clr) do cells[k//16][k%16].BackgroundColor3=C.white end
+
+   -- nada makin tinggi tiap garis/combo
+   local beeps=math.min(n+combo-1,6)
+   for b=1,beeps do
+    task.delay((b-1)*.07,function() play("clear",1+.12*(b-1)) end)
+   end
+
+   task.wait(.15)
+   if not alive then return end
+   for k in pairs(clr) do grid[k//16][k%16]=false end
+   local gain=n*n*10+(combo-1)*10
+   score=score+gain
+   local txt2=""
+   if n>=2 then txt2=n.." GARIS!\n" end
+   txt2=txt2.."+"..gain
+   if combo>1 then txt2=txt2.."\nCOMBO x"..combo end
+   popup(txt2)
+  else
+   combo=0
+  end
+
+  renderBoard()
+  updateTitle()
+  if not (slots[1] or slots[2] or slots[3]) then newPieces() end
+  renderTray()
+  busy=false
+  checkGameOver()
+ end
+
+ -- drag & drop
+ local function toScreen(io)
+  return Vector2.new(io.Position.X,io.Position.Y)+GuiService:GetGuiInset()
+ end
+
+ local function moveDrag(pos)
+  local p=drag.piece
+  local sh=p.shape
+  local pw=sh.w*(cs+GAP)-GAP
+  local ph=sh.h*(cs+GAP)-GAP
+
+  -- angkatan di atas jari mengecil dekat bawah layar
+  local lift=0
+  if drag.touch then
+   lift=math.clamp((gui.AbsoluteSize.Y-pos.Y)/2,0,cs*2)
+  end
+
+  local tlx,tly=pos.X-pw/2,pos.Y-ph/2-lift
+  drag.frame.Position=UDim2.fromOffset(tlx,tly)
+  drag.pos=pos
+
+  local bp=board.AbsolutePosition
+  local fc=(tlx-bp.X-GAP)/(cs+GAP)+1
+  local fr=(tly-bp.Y-GAP)/(cs+GAP)+1
+  local c0,r0=math.floor(fc+.5),math.floor(fr+.5)
+  local bestD,bestR,bestC=1.6,nil,nil
+  for dr=-1,1 do for dc=-1,1 do
+   local r,c=r0+dr,c0+dc
+   local dist=(fr-r)^2+(fc-c)^2
+   if dist<bestD and canPlace(sh,r,c) then
+    bestD,bestR,bestC=dist,r,c
+   end
+  end end
+
+  local key
+  if bestR then
+   key=bestR..","..bestC
+   drag.target={bestR,bestC}
+  else
+   drag.target=nil
+  end
+  if key~=drag.key then
+   drag.key=key
+   if drag.target then
+    renderBoard({piece=p,row=bestR,col=bestC})
+   else
+    renderBoard()
+   end
+  end
+ end
+
+ local function startDrag(i,io)
+  if drag or busy or isOver then return end
+  local ty=io.UserInputType
+  if ty~=Enum.UserInputType.Touch and ty~=Enum.UserInputType.MouseButton1 then return end
+  local p=slots[i]
+  if not p then return end
+  play("pick")
+  local f=buildPiece(p,cs,GAP,60)
+  f.Parent=gui
+  drag={slot=i,piece=p,frame=f,input=io,touch=(ty==Enum.UserInputType.Touch)}
+  if trayPieces[i] then trayPieces[i].Visible=false end
+  moveDrag(toScreen(io))
+ end
+
+ local function endDrag()
+  local d=drag
+  drag=nil
+  d.frame:Destroy()
+  renderBoard()
+  if d.target then
+   task.spawn(place,d.slot,d.target[1],d.target[2])
+  else
+   if trayPieces[d.slot] then trayPieces[d.slot].Visible=true end
+   local p=d.pos
+   if p then
+    local bp,bs=board.AbsolutePosition,board.AbsoluteSize
+    if p.X>bp.X and p.X<bp.X+bs.X and p.Y>bp.Y and p.Y<bp.Y+bs.Y then
+     play("invalid")
+    end
+   end
+  end
+ end
+
+ table.insert(connections,UIS.InputChanged:Connect(function(io)
+  if not drag then return end
+  if drag.touch then
+   if io==drag.input then moveDrag(toScreen(io)) end
+  elseif io.UserInputType==Enum.UserInputType.MouseMovement then
+   moveDrag(toScreen(io))
+  end
+ end))
+
+ table.insert(connections,UIS.InputEnded:Connect(function(io)
+  if not drag then return end
+  if drag.touch then
+   if io==drag.input then endDrag() end
+  elseif io.UserInputType==Enum.UserInputType.MouseButton1 then
+   endDrag()
+  end
+ end))
+
+ -- slot balok
+ for i=1,3 do
+  local s=obj("TextButton",a,{
+   Text="",AutoButtonColor=false,
+   BackgroundColor3=Color3.fromRGB(38,44,90),
+   BackgroundTransparency=.3,BorderSizePixel=0,ZIndex=12
+  })
+  round(s,10)
+  s.InputBegan:Connect(function(io) startDrag(i,io) end)
+  slotFrames[i]=s
+ end
+
+ clean=function()
+  alive=false
+  if drag then
+   drag.frame:Destroy()
+   drag=nil
+  end
+ end
+
+ table.insert(connections,a:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+  layout()
+  renderBoard()
+ end))
+
+ newPieces()
+ layout()
+ renderBoard()
+ renderTray()
+ updateTitle()
+ controls(function() start(11) end)
 end
 
 showMenu=function()
